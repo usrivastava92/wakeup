@@ -1,0 +1,16 @@
+[package]
+name = "wakeup"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny macOS keep-awake utility that creates IOKit power assertions directly."
+license = "MIT"
+readme = "../../README.md"
+categories = ["command-line-utilities", "os::macos-apis"]
+keywords = ["caffeinate", "macos", "power", "sleep", "cli"]
+
+[[bin]]
+name = "wakeup"
+path = "src/main.rs"
+
+# No external crates: we link Apple's IOKit / CoreFoundation frameworks via FFI.
+[dependencies]
