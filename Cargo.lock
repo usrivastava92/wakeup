@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "wakeup"
 version = "0.1.0"
+dependencies = [
+ "wakeup-core",
+]
+
+[[package]]
+name = "wakeup-core"
+version = "0.1.0"

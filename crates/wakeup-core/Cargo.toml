@@ -1,0 +1,14 @@
+[package]
+name = "wakeup-core"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform power assertion engine used by the wakeup CLI and its consumers."
+license = "MIT"
+readme = "../../README.md"
+categories = ["os", "api-bindings"]
+keywords = ["power", "sleep", "caffeinate", "cross-platform"]
+
+# No external crates: each backend links its OS's native power APIs directly
+# (IOKit/CoreFoundation on macOS, systemd-inhibit on Linux, kernel32 Power
+# Request APIs on Windows), or falls back to a clear "unsupported" error.
+[dependencies]

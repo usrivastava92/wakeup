@@ -1,119 +1,26 @@
-//! wakeup - a `caffeinate`-compatible keep-awake utility for macOS.
+//! wakeup - a `caffeinate`-compatible keep-awake CLI.
 //!
-//! This tool creates IOKit power assertions directly, without shelling out to the
-//! `/usr/bin/caffeinate` binary.
+//! This binary only parses flags and drives `wakeup-core`'s `Session`; all
+//! platform-specific power assertion logic lives in that crate so it can be
+//! reused by other consumers (see the workspace `Cargo.toml`).
 //!
 //! Flags mirror the common `caffeinate` interface:
-//!   -d  prevent the display from sleeping        (PreventUserIdleDisplaySleep)
-//!   -i  prevent the system from idle sleeping     (PreventUserIdleSystemSleep)
-//!   -m  prevent the disk from idle sleeping       (PreventDiskIdle)
-//!   -s  prevent system sleep (only on AC power)   (PreventSystemSleep)
-//!   -u  declare the user is active (wakes display)(UserIsActive, 5s default)
+//!   -d  prevent the display from sleeping
+//!   -i  prevent the system from idle sleeping
+//!   -m  prevent the disk from idle sleeping
+//!   -s  prevent system sleep (only on AC power, where the platform honors that)
+//!   -u  declare the user is active (wakes the display, 5s default)
 //!   -t <seconds>  hold the assertion for N seconds, then exit
 //!   -w <pid>      hold until the given process exits
 //!   [command ...] hold while running command, then exit with its status
 //!
 //! With no assertion flag, `-i` is assumed (same default as `caffeinate`).
 
-use std::os::raw::c_int;
-use std::process::Command;
 use std::time::{Duration, Instant};
-
-// ---- CoreFoundation / IOKit FFI ------------------------------------------ //
-
-#[cfg(target_os = "macos")]
-mod platform {
-    use std::ffi::{c_void, CString};
-    use std::os::raw::{c_char, c_int};
-
-    type CFStringRef = *const c_void;
-    type IOPMAssertionID = u32;
-
-    const KCF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
-    const KIOPM_ASSERTION_LEVEL_ON: u32 = 255;
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFStringCreateWithCString(
-            alloc: *const c_void,
-            c_str: *const c_char,
-            encoding: u32,
-        ) -> CFStringRef;
-        fn CFRelease(cf: *const c_void);
-    }
-
-    #[link(name = "IOKit", kind = "framework")]
-    extern "C" {
-        fn IOPMAssertionCreateWithName(
-            assertion_type: CFStringRef,
-            assertion_level: u32,
-            assertion_name: CFStringRef,
-            assertion_id: *mut IOPMAssertionID,
-        ) -> c_int;
-        fn IOPMAssertionRelease(assertion_id: IOPMAssertionID) -> c_int;
-    }
-
-    fn cfstr(s: &str) -> Result<CFStringRef, String> {
-        let c = CString::new(s).map_err(|_| "string contained a NUL byte".to_string())?;
-        let r = unsafe {
-            CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), KCF_STRING_ENCODING_UTF8)
-        };
-        if r.is_null() {
-            return Err("failed to allocate CFString".to_string());
-        }
-        Ok(r)
-    }
-
-    /// An RAII power assertion: released automatically on drop (and by the kernel
-    /// if the process dies, which is how Ctrl-C is handled).
-    pub struct Assertion {
-        id: IOPMAssertionID,
-    }
-
-    impl Assertion {
-        pub fn new(assertion_type: &str, reason: &str) -> Result<Self, String> {
-            let atype = cfstr(assertion_type)?;
-            let aname = cfstr(reason)?;
-            let mut id: IOPMAssertionID = 0;
-            let rc = unsafe {
-                IOPMAssertionCreateWithName(atype, KIOPM_ASSERTION_LEVEL_ON, aname, &mut id)
-            };
-            unsafe {
-                CFRelease(atype);
-                CFRelease(aname);
-            }
-            if rc == 0 {
-                Ok(Assertion { id })
-            } else {
-                Err(format!("IOPMAssertionCreateWithName returned {rc}"))
-            }
-        }
-    }
-
-    impl Drop for Assertion {
-        fn drop(&mut self) {
-            unsafe { IOPMAssertionRelease(self.id) };
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod platform {
-    pub struct Assertion;
-
-    impl Assertion {
-        pub fn new(_assertion_type: &str, _reason: &str) -> Result<Self, String> {
-            Err("power assertions are currently implemented only on macOS".to_string())
-        }
-    }
-}
-
-use platform::Assertion;
-
-// ---- CLI ------------------------------------------------------------------ //
+use wakeup_core::{AssertionKind, AssertionRequest, Session};
 
 const USAGE: &str = "\
-wakeup - keep macOS awake with direct IOKit assertions
+wakeup - a cross-platform, caffeinate-compatible keep-awake CLI
 
 USAGE:
     wakeup [-dimsu] [-t seconds] [-w pid] [command [args...]]
@@ -132,6 +39,9 @@ OPTIONS:
 If a command is given, wakeup holds the assertion while the command runs and
 exits with the command's status. With no flags, -i is assumed. Press Ctrl-C to
 release when running interactively.
+
+Not every flag is supported on every platform yet; see the wakeup-core release
+plan for what is implemented on macOS, Linux, and Windows today.
 
 EXAMPLES:
     wakeup                 # keep the system awake until Ctrl-C
@@ -252,112 +162,52 @@ fn fail(msg: &str) -> ! {
     std::process::exit(2);
 }
 
-// ---- main ----------------------------------------------------------------- //
+// ---- mapping CLI flags onto wakeup-core ------------------------------------ //
 
-#[cfg(unix)]
-fn pid_alive(pid: i32) -> bool {
-    // kill(pid, 0): 0 => alive, EPERM => alive (not ours), ESRCH => gone.
-    let rc = unsafe { libc_kill(pid, 0) };
-    if rc == 0 {
-        return true;
-    }
-    // errno is not easily portable without libc; treat EPERM as alive.
-    errno() == EPERM
-}
-
-#[cfg(not(unix))]
-fn pid_alive(_pid: i32) -> bool {
-    false
-}
-
-#[cfg(unix)]
-extern "C" {
-    #[link_name = "kill"]
-    fn libc_kill(pid: i32, sig: c_int) -> c_int;
-}
-
-#[cfg(all(unix, target_os = "macos"))]
-extern "C" {
-    #[link_name = "__error"]
-    fn libc_errno_location() -> *mut c_int;
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-extern "C" {
-    #[link_name = "__errno_location"]
-    fn libc_errno_location() -> *mut c_int;
-}
-
-#[cfg(unix)]
-const EPERM: c_int = 1;
-
-#[cfg(unix)]
-fn errno() -> c_int {
-    unsafe { *libc_errno_location() }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AssertionKind {
-    Normal,
-    UserActive,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AssertionSpec {
-    assertion_type: &'static str,
-    reason: &'static str,
-    kind: AssertionKind,
-}
-
-struct HeldAssertion {
-    _assertion: Assertion,
-    release_at: Option<Instant>,
-}
-
-fn assertion_specs(opts: &Opts) -> Vec<AssertionSpec> {
+/// Build the platform-neutral assertion requests for the given flags, in the
+/// same order and with the same default-to-`-i` behavior as the original
+/// single-crate implementation.
+fn assertion_requests(opts: &Opts) -> Vec<AssertionRequest> {
     let mut want = Vec::new();
     let any_explicit =
         opts.display || opts.idle_system || opts.disk || opts.system || opts.user_active;
 
     if opts.idle_system || !any_explicit {
-        want.push(AssertionSpec {
-            assertion_type: "PreventUserIdleSystemSleep",
-            reason: "wakeup: preventing idle system sleep",
-            kind: AssertionKind::Normal,
-        });
+        want.push(AssertionRequest::new(
+            AssertionKind::IdleSystem,
+            "wakeup: preventing idle system sleep",
+        ));
     }
     if opts.display {
-        want.push(AssertionSpec {
-            assertion_type: "PreventUserIdleDisplaySleep",
-            reason: "wakeup: preventing display sleep",
-            kind: AssertionKind::Normal,
-        });
+        want.push(AssertionRequest::new(
+            AssertionKind::Display,
+            "wakeup: preventing display sleep",
+        ));
     }
     if opts.disk {
-        want.push(AssertionSpec {
-            assertion_type: "PreventDiskIdle",
-            reason: "wakeup: preventing disk idle sleep",
-            kind: AssertionKind::Normal,
-        });
+        want.push(AssertionRequest::new(
+            AssertionKind::Disk,
+            "wakeup: preventing disk idle sleep",
+        ));
     }
     if opts.system {
-        want.push(AssertionSpec {
-            assertion_type: "PreventSystemSleep",
-            reason: "wakeup: preventing system sleep (AC only)",
-            kind: AssertionKind::Normal,
-        });
+        want.push(AssertionRequest::new(
+            AssertionKind::System,
+            "wakeup: preventing system sleep (AC only)",
+        ));
     }
     if opts.user_active {
-        want.push(AssertionSpec {
-            assertion_type: "UserIsActive",
-            reason: "wakeup: user is active",
-            kind: AssertionKind::UserActive,
-        });
+        want.push(AssertionRequest::new(
+            AssertionKind::UserActive,
+            "wakeup: user is active",
+        ));
     }
 
     want
 }
 
+/// `-u`'s default: release after 5 seconds, but only in "direct" mode (no
+/// explicit timeout, PID wait, or command was also given).
 fn user_active_default_release(opts: &Opts, now: Instant) -> Option<Instant> {
     if opts.user_active
         && opts.timeout.is_none()
@@ -370,107 +220,43 @@ fn user_active_default_release(opts: &Opts, now: Instant) -> Option<Instant> {
     }
 }
 
-fn create_assertions(opts: &Opts) -> Vec<HeldAssertion> {
-    let specs = assertion_specs(opts);
-    let user_active_release = user_active_default_release(opts, Instant::now());
-    let mut held = Vec::with_capacity(specs.len());
-
-    for spec in specs {
-        match Assertion::new(spec.assertion_type, spec.reason) {
-            Ok(assertion) => held.push(HeldAssertion {
-                _assertion: assertion,
-                release_at: if spec.kind == AssertionKind::UserActive {
-                    user_active_release
-                } else {
-                    None
-                },
-            }),
-            Err(e) => {
-                eprintln!(
-                    "wakeup: could not create {} assertion ({e})",
-                    spec.assertion_type
-                );
-                std::process::exit(1);
-            }
-        }
-    }
-
-    held
-}
-
-fn drop_expired_assertions(held: &mut Vec<HeldAssertion>) {
-    let now = Instant::now();
-    let mut i = 0;
-    while i < held.len() {
-        if held[i].release_at.map(|t| now >= t).unwrap_or(false) {
-            held.swap_remove(i);
-        } else {
-            i += 1;
-        }
-    }
-}
-
-fn next_sleep_until_release(held: &[HeldAssertion], fallback: Duration) -> Duration {
-    let now = Instant::now();
-    held.iter()
-        .filter_map(|h| h.release_at.map(|t| t.saturating_duration_since(now)))
-        .min()
-        .unwrap_or(fallback)
-}
-
 fn main() {
     let opts = parse_args();
+    let requests = assertion_requests(&opts);
 
-    // Hold the assertions for the lifetime of `held`.
-    let mut held = create_assertions(&opts);
+    let mut session = match Session::create(&requests) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("wakeup: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(at) = user_active_default_release(&opts, Instant::now()) {
+        session.set_release_at(AssertionKind::UserActive, at);
+    }
 
     // Mode 1: run a command, hold while it runs.
     if !opts.command.is_empty() {
-        let status = Command::new(&opts.command[0])
-            .args(&opts.command[1..])
-            .status();
-        let code = match status {
-            Ok(s) => s.code().unwrap_or(1),
-            Err(e) => {
-                eprintln!("wakeup: failed to run {}: {e}", opts.command[0]);
-                126
-            }
-        };
+        let code = session.run_command(&opts.command[0], &opts.command[1..]);
         std::process::exit(code);
     }
 
     // Mode 2: wait for a pid to exit.
     if let Some(pid) = opts.wait_pid {
-        while pid_alive(pid) {
-            drop_expired_assertions(&mut held);
-            std::thread::sleep(
-                next_sleep_until_release(&held, Duration::from_millis(500))
-                    .min(Duration::from_millis(500)),
-            );
-        }
+        session.wait_for_pid(pid, Duration::from_millis(500));
         return;
     }
 
     // Mode 3: hold for a fixed duration. Ctrl-C still exits early and the
     // kernel releases the assertion.
     if let Some(secs) = opts.timeout {
-        let deadline = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < deadline {
-            drop_expired_assertions(&mut held);
-            let until_timeout = deadline.saturating_duration_since(Instant::now());
-            std::thread::sleep(next_sleep_until_release(&held, until_timeout).min(until_timeout));
-        }
+        session.hold_for(Duration::from_secs(secs));
         return;
     }
 
-    // Mode 4: hold until killed (Ctrl-C). Kernel releases the assertion on exit.
-    while !held.is_empty() {
-        drop_expired_assertions(&mut held);
-        if held.is_empty() {
-            break;
-        }
-        std::thread::sleep(next_sleep_until_release(&held, Duration::from_secs(3600)));
-    }
+    // Mode 4: hold until killed (Ctrl-C) or every assertion has expired.
+    session.hold_until_released(Duration::from_secs(3600));
 }
 
 #[cfg(test)]
@@ -483,9 +269,9 @@ mod tests {
 
     #[test]
     fn defaults_to_idle_system_assertion() {
-        let specs = assertion_specs(&opts(&[]));
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].assertion_type, "PreventUserIdleSystemSleep");
+        let reqs = assertion_requests(&opts(&[]));
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].kind, AssertionKind::IdleSystem);
     }
 
     #[test]
@@ -500,9 +286,9 @@ mod tests {
 
     #[test]
     fn supports_disk_idle_assertion() {
-        let specs = assertion_specs(&opts(&["-m"]));
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].assertion_type, "PreventDiskIdle");
+        let reqs = assertion_requests(&opts(&["-m"]));
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].kind, AssertionKind::Disk);
     }
 
     #[test]

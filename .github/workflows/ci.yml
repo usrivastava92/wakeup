@@ -5,9 +5,19 @@ on:
   pull_request:
 
 jobs:
-  macos:
-    name: macOS
-    runs-on: macos-latest
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: ubuntu-latest
+            name: Linux
+          - os: windows-latest
+            name: Windows
 
     steps:
       - name: Checkout
@@ -21,11 +31,29 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
-      - name: Test
-        run: cargo test --workspace
-
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Test
+        run: cargo test --workspace
+
       - name: Release build
         run: cargo build --release --workspace
+
+      # systemd-inhibit is present on ubuntu-latest's default systemd install,
+      # but confirm it explicitly since the Linux backend shells out to it.
+      - name: Check systemd-inhibit is available (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: command -v systemd-inhibit
+
+      - name: Smoke test (non-Windows)
+        if: matrix.os != 'windows-latest'
+        run: |
+          ./target/release/wakeup --version
+          ./target/release/wakeup -t 1
+
+      - name: Smoke test (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          ./target/release/wakeup.exe --version
+          ./target/release/wakeup.exe -t 1

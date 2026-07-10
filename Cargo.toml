@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wakeup"]
+members = ["crates/wakeup", "crates/wakeup-core"]
 
 # Shared release profile for every binary in the workspace.
 [profile.release]

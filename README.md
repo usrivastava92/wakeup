@@ -1,12 +1,26 @@
 # wakeup
 
-A tiny, auditable `caffeinate`-compatible keep-awake utility for macOS.
+A tiny, auditable, cross-platform `caffeinate`-compatible keep-awake CLI.
 
-`wakeup` creates IOKit power assertions directly, which makes it useful as a small standalone binary and as a foundation for higher-level automation.
-It is especially handy when you want a self-contained tool instead of shelling out to `/usr/bin/caffeinate`.
+`wakeup` talks to each OS's native power APIs directly instead of shelling out to a bundled helper: IOKit on macOS, `systemd-logind` on Linux, and the Power Request API on Windows.
+That makes it useful as a small standalone binary and as a foundation for higher-level automation.
 
-This repo contains the standalone `wakeup` binary.
-The optional Herdr integration now lives in the separate `herdr-wakeup` repo.
+This repo is organized as two crates:
+
+- `crates/wakeup-core` - the engine. Platform-neutral request/handle types, the per-OS backends, and the shared timer/PID-wait/command-mode logic.
+- `crates/wakeup` - the thin CLI that parses flags and drives `wakeup-core`.
+
+The optional Herdr integration now lives in the separate `herdr-wakeup` repo, which consumes the `wakeup` binary rather than duplicating any of this logic.
+
+## Platform support
+
+| Platform | Backend | Supported today | Not yet supported |
+| --- | --- | --- | --- |
+| macOS | IOKit `IOPMAssertionCreateWithName` | `-d`, `-i`, `-m`, `-s`, `-u` | - |
+| Linux | `systemd-logind` inhibitor locks (via `systemd-inhibit`) | `-i`, `-s`, timeout, PID wait, command mode | `-d`, `-m`, `-u` (desktop-specific, no logind equivalent) |
+| Windows | `PowerCreateRequest` / `PowerSetRequest` / `PowerClearRequest` | `-d`, `-i`, `-s` | `-m`, `-u` (no matching Power Request type) |
+
+Requesting an unsupported flag on a given platform fails fast with a clear error naming the flag and the platform, instead of silently doing nothing.
 
 ## Build and install
 
@@ -58,13 +72,29 @@ wakeup -di make build   # keep system + display awake while `make build` runs
 
 ## Verifying it works
 
-Ask macOS what is holding sleep open:
+**macOS** - ask the OS what is holding sleep open:
 
 ```bash
 pmset -g assertions | grep wakeup
 ```
 
 You should see a `PreventUserIdleSystemSleep` (and/or `PreventUserIdleDisplaySleep`) assertion named `wakeup: ...` while the tool is running.
+
+**Linux** - list active `systemd-logind` inhibitors:
+
+```bash
+systemd-inhibit --list | grep wakeup
+```
+
+You should see an entry with `who` set to `wakeup` while the tool is running.
+
+**Windows** - list active power requests:
+
+```powershell
+powercfg /requests
+```
+
+You should see an entry under `SYSTEM` and/or `DISPLAY` while the tool is running.
 
 ## Herdr integration
 
@@ -73,8 +103,9 @@ Use the separate `herdr-wakeup` plugin repo for Herdr agent-aware automation.
 
 ## Notes and limitations
 
-- The shipped power assertion backend is macOS-only today.
-  Linux and Windows backends are good candidates for a future cross-platform release.
 - `-i` prevents idle sleep only, exactly like `caffeinate -i`.
-  Closing the lid still triggers clamshell sleep unless the machine is on AC power with an external display.
-- `-u` follows `caffeinate` by using a 5 second default when no timeout, process, or command is supplied.
+  On macOS, closing the lid still triggers clamshell sleep unless the machine is on AC power with an external display.
+- `-u` follows `caffeinate` by using a 5 second default when no timeout, process, or command is supplied. Not supported on Linux or Windows yet (see the platform support table above).
+- On Linux, `-i` and `-s` require `systemd-logind` (present on effectively every modern distribution using systemd). Desktop-specific display/idle handling for `-d` and `-m` is a tracked follow-up, not a fundamental limitation.
+- On Windows, `-m` (disk idle) and `-u` (user active) have no direct Power Request equivalent and are reported as unsupported rather than silently ignored.
+- Not every platform's assertion semantics are identical even where a flag is "supported" - see the per-OS notes above before relying on exact timing behavior.

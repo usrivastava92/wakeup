@@ -2,15 +2,17 @@
 name = "wakeup"
 version = "0.1.0"
 edition = "2021"
-description = "A tiny macOS keep-awake utility that creates IOKit power assertions directly."
+description = "A tiny, auditable caffeinate-compatible keep-awake CLI. Cross-platform: macOS, Linux, and Windows."
 license = "MIT"
 readme = "../../README.md"
-categories = ["command-line-utilities", "os::macos-apis"]
-keywords = ["caffeinate", "macos", "power", "sleep", "cli"]
+categories = ["command-line-utilities", "os"]
+keywords = ["caffeinate", "power", "sleep", "cli", "cross-platform"]
 
 [[bin]]
 name = "wakeup"
 path = "src/main.rs"
 
-# No external crates: we link Apple's IOKit / CoreFoundation frameworks via FFI.
+# The CLI itself has no external dependencies; all OS-level work lives in
+# wakeup-core, which links each platform's native power APIs directly.
 [dependencies]
+wakeup-core = { path = "../wakeup-core", version = "0.1.0" }
