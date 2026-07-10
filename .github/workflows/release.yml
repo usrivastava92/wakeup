@@ -1,0 +1,124 @@
+name: Release
+
+# Builds standalone `wakeup` binaries for every platform wakeup-core actually
+# supports and attaches them to a GitHub Release. This is what lets
+# downstream consumers (e.g. the herdr-wakeup plugin) vendor a prebuilt
+# binary instead of requiring every end user to have a Rust toolchain.
+#
+# Triggers on a `vX.Y.Z` tag push, or manually via workflow_dispatch against
+# an existing tag (useful for re-running after a release workflow fix).
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re-)build and attach assets to"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-14 runners are Apple Silicon (arm64) hosts, but Xcode's
+          # toolchain ships both Darwin SDKs, so both Mac architectures are
+          # built here without needing a second (Intel) runner.
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: wakeup-macos-arm64
+            native: true
+          - os: macos-14
+            target: x86_64-apple-darwin
+            asset: wakeup-macos-x86_64
+            native: false
+          # musl, not glibc: a glibc-linked binary built on whatever glibc
+          # happens to ship in the runner's Ubuntu image will refuse to run
+          # on any distro with an older glibc (confirmed the hard way: a
+          # gnu-target build here failed with a GLIBC_2.39-not-found error
+          # on plain debian:bookworm-slim). musl gives a fully static
+          # binary with no runtime libc dependency at all, so it runs
+          # unmodified on any Linux distro, glibc or musl-based.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: wakeup-linux-x86_64
+            native: true
+            musl: true
+          # ubuntu-24.04-arm is a native arm64 GitHub-hosted runner, so this
+          # is a native build too, not a cross-compile - no cross-linker
+          # setup needed, same as the x86_64 job.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: wakeup-linux-arm64
+            native: true
+            musl: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: wakeup-windows-x86_64.exe
+            native: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: matrix.musl == true
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p wakeup
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/wakeup"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            src="${src}.exe"
+          fi
+          cp "$src" "dist/${{ matrix.asset }}"
+          chmod +x "dist/${{ matrix.asset }}" || true
+
+      - name: Smoke test (native target only)
+        if: matrix.native == true
+        shell: bash
+        run: ./dist/${{ matrix.asset }} --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p out
+          find dist -type f -exec cp {} out/ \;
+          ls -la out
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: out/*
+          generate_release_notes: true

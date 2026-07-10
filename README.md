@@ -36,6 +36,11 @@ cargo build --release
 cp target/release/wakeup /somewhere/on/your/PATH
 ```
 
+### Prebuilt binaries
+
+Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which cross-builds and publishes a GitHub Release with prebuilt binaries for `macos-arm64`, `macos-x86_64`, `linux-x86_64` (static `musl`, runs on any distro), `linux-arm64` (static `musl`), and `windows-x86_64` - no Rust toolchain needed to install one of these.
+Consumers that vendor `wakeup` directly (e.g. the `herdr-wakeup` plugin) pull these release assets rather than requiring their own users to build from source.
+
 ## Usage
 
 Flags mirror the common `caffeinate` interface:
