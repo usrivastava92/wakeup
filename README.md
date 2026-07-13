@@ -62,6 +62,25 @@ Unsupported combinations fail fast with a clear error message naming the flag an
 
 ## Installation
 
+### Homebrew (macOS &amp; Linux)
+
+```bash
+brew install usrivastava92/tap/wakeup
+```
+
+Or tap once for future updates:
+
+```bash
+brew tap usrivastava92/tap
+brew install wakeup
+```
+
+### From crates.io
+
+```bash
+cargo install wakeup
+```
+
 ### Prebuilt binaries
 
 Every [release](https://github.com/usrivastava92/wakeup/releases) includes prebuilt static binaries.
@@ -101,11 +120,15 @@ cargo build --release
 cp target/release/wakeup /usr/local/bin/
 ```
 
-### From crates.io
+### Windows
 
-```bash
-cargo install wakeup
-```
+Prebuilt `.exe` binaries are available on the [releases page](https://github.com/usrivastava92/wakeup/releases).
+Native package manager support (winget, Scoop, Chocolatey) is on the roadmap.
+
+### Linux (without Homebrew)
+
+Prebuilt static binaries are available on the [releases page](https://github.com/usrivastava92/wakeup/releases).
+Native package manager support (apt, snap, Flatpak) is on the roadmap.
 
 ---
 
