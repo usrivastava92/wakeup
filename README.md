@@ -309,6 +309,8 @@ It will never silently ignore a flag you passed, leaving you to wonder why your 
 Bug reports, feature requests, and pull requests are welcome.
 Please open an issue to discuss significant changes before submitting a PR.
 
+For release automation notes, see [docs/release-automation.md](docs/release-automation.md).
+
 ---
 
 ## License
