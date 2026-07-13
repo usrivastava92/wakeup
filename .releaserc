@@ -7,7 +7,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "sed -i 's/^version = \".*\"/version = \"${nextRelease.version}\"/' crates/wakeup/Cargo.toml crates/wakeup-core/Cargo.toml"
+        "prepareCmd": "sed -i 's/^version = \".*\"/version = \"${nextRelease.version}\"/' crates/wakeup/Cargo.toml crates/wakeup-core/Cargo.toml && cargo generate-lockfile"
       }
     ],
     [
