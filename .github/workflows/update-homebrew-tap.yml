@@ -1,7 +1,7 @@
 name: Update Homebrew Tap
 # Fires automatically after a successful Release workflow run.
-# Uses workflow_run so it runs in the default branch (main) context,
-# satisfying the production environment's branch protection gate.
+# Uses workflow_run so it runs in the default branch (main) context.
+# The production environment gate and branch protection are separate controls.
 # Contributors on PR branches cannot access the APP_PRIVATE_KEY secret.
 
 on:
@@ -12,13 +12,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: update-homebrew-tap
+  cancel-in-progress: false
+
 jobs:
   update:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Get release tag
         id: release
@@ -34,10 +40,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           ASSET_NAMES="wakeup-macos-arm64 wakeup-macos-x86_64 wakeup-linux-x86_64 wakeup-linux-arm64"
           for name in $ASSET_NAMES; do
-            url=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/${{ steps.release.outputs.tag }}" \
+            urls=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/${{ steps.release.outputs.tag }}" \
               --jq ".assets[] | select(.name == \"${name}\") | .browser_download_url")
+            count=$(printf '%s\n' "$urls" | sed '/^$/d' | wc -l | tr -d ' ')
+            if [ "$count" -ne 1 ]; then
+              echo "Expected exactly one nonempty asset URL for ${name}." >&2
+              exit 1
+            fi
+            url=$(printf '%s\n' "$urls" | sed '/^$/d')
             sha=$(curl -fsSL "$url" | sha256sum | awk '{print $1}')
             key=$(echo "$name" | sed 's/wakeup-//')
             echo "${key}=${sha}"
@@ -55,39 +68,28 @@ jobs:
             --sha256-linux-arm64 "${{ steps.hashes.outputs.linux-arm64 }}" \
             > wakeup.rb
 
-      - name: Generate installation token
+      - name: Generate App token
         id: app-token
-        env:
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "$APP_PRIVATE_KEY" > /tmp/app-key.pem
-          chmod 600 /tmp/app-key.pem
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: usrivastava92
+          repositories: homebrew-tap
+          permission-contents: write
 
-          header=$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
-          now=$(date +%s)
-          payload=$(echo -n "{\"iat\":$((now-60)),\"exp\":$((now+600)),\"iss\":\"$APP_ID\"}" | base64 -w0 | tr '+/' '-_' | tr -d '=')
-          signing_input="${header}.${payload}"
-          signature=$(echo -n "$signing_input" | openssl dgst -sha256 -sign /tmp/app-key.pem -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
-          jwt="${signing_input}.${signature}"
-          rm -f /tmp/app-key.pem
-
-          installation_id=$(gh api "/repos/$GITHUB_REPOSITORY/installation" \
-            -H "Authorization: Bearer ${jwt}" --jq '.id')
-
-          token=$(gh api --method POST "/app/installations/${installation_id}/access_tokens" \
-            -H "Authorization: Bearer ${jwt}" --jq '.token')
-
-          echo "token=${token}" >> "$GITHUB_OUTPUT"
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: usrivastava92/homebrew-tap
+          ref: main
+          path: homebrew-tap
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Push to homebrew-tap
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TAP_REPOSITORY: usrivastava92/homebrew-tap
           VERSION: ${{ steps.release.outputs.tag }}
         run: |
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TAP_REPOSITORY}.git" homebrew-tap
           cp wakeup.rb homebrew-tap/Formula/wakeup.rb
 
           cd homebrew-tap
@@ -101,4 +103,4 @@ jobs:
 
           git add Formula/wakeup.rb
           git commit -m "Update wakeup to ${VERSION}"
-          git push origin HEAD
+          git push origin HEAD:main
