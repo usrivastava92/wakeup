@@ -1,6 +1,6 @@
 [package]
 name = "wakeup-core"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Cross-platform power assertion engine used by the wakeup CLI and its consumers."
 license = "MIT"

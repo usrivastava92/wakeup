@@ -1,6 +1,6 @@
 [package]
 name = "wakeup"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "A tiny, auditable caffeinate-compatible keep-awake CLI. Cross-platform: macOS, Linux, and Windows."
 license = "MIT"
