@@ -27,7 +27,32 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Generate installation token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          echo "$APP_PRIVATE_KEY" > /tmp/app-key.pem
+          chmod 600 /tmp/app-key.pem
+
+          header=$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+          now=$(date +%s)
+          payload=$(echo -n "{\"iat\":$((now-60)),\"exp\":$((now+600)),\"iss\":\"$APP_ID\"}" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+          signing_input="${header}.${payload}"
+          signature=$(echo -n "$signing_input" | openssl dgst -sha256 -sign /tmp/app-key.pem -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
+          jwt="${signing_input}.${signature}"
+          rm -f /tmp/app-key.pem
+
+          installation_id=$(gh api "/repos/$GITHUB_REPOSITORY/installation" \
+            -H "Authorization: Bearer ${jwt}" --jq '.id')
+
+          token=$(gh api --method POST "/app/installations/${installation_id}/access_tokens" \
+            -H "Authorization: Bearer ${jwt}" --jq '.token')
+
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
       - name: Run semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: npx semantic-release
